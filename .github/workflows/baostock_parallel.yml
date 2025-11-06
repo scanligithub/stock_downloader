@@ -1,0 +1,76 @@
+name: 🐂 Baostock 全A股历史数据分布式下载（20 并发 + 手动列表）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    name: 下载分区 ${{ matrix.task_index }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        task_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+      max-parallel: 20
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install dependencies
+        run: pip install baostock pandas pyarrow tqdm
+
+      - name: 📈 Run Baostock parallel downloader
+        env:
+          TASK_INDEX: ${{ matrix.task_index }}
+          TASK_COUNT: 20
+        run: |
+          mkdir -p data
+          python scripts/download_baostock_parallel.py
+
+      - name: 📤 Upload data partition
+        uses: actions/upload-artifact@v4
+        with:
+          name: data_part_${{ matrix.task_index }}
+          path: data/
+
+  merge:
+    name: 合并所有结果
+    needs: download
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📥 Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_data
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install dependencies
+        run: pip install pandas pyarrow tqdm
+
+      - name: 🔄 Merge all results
+        run: |
+          mkdir -p data
+          find all_data -type f -name "*.csv" -exec cp {} data/ \;
+          python scripts/merge_results.py
+
+      - name: 📦 Compress merged data
+        run: zip -r all_data.zip data
+
+      - name: 📤 Upload merged dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: all_data_zip
+          path: all_data.zip
