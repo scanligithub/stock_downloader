@@ -1,0 +1,2 @@
+# stock_downloader
+以20个job并行下载baostock里的日线数据
