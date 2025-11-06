@@ -1,11 +1,41 @@
-name: 🐂 Baostock 全A股历史数据分布式下载（20 并发 + 手动列表）
+name: 🐂 Baostock 全A股历史数据分布式下载（含 TuShare 列表阶段）
 
 on:
   workflow_dispatch:
 
 jobs:
+  # ======================== 1️⃣ 获取股票列表 ========================
+  get_stock_list:
+    name: 获取股票列表 (TuShare)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install tushare
+        run: pip install tushare pandas
+
+      - name: 🧩 Run TuShare script
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        run: |
+          python scripts/get_stock_list_tushare.py
+
+      - name: 📤 Upload stock list artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock_list
+          path: stock_list.json
+
+  # ======================== 2️⃣ 并行下载部分 ========================
   download:
     name: 下载分区 ${{ matrix.task_index }}
+    needs: get_stock_list
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -16,10 +46,16 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 📥 Download stock list artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: stock_list
+          path: .
+
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: 📦 Install dependencies
         run: pip install baostock pandas pyarrow tqdm
@@ -29,22 +65,27 @@ jobs:
           TASK_INDEX: ${{ matrix.task_index }}
           TASK_COUNT: 20
         run: |
+          # 如果 artifacts 为空，自动 fallback 到本地 stock_list.json
+          if [ ! -s stock_list.json ]; then
+            echo "⚠️ 未检测到 stock_list.json，使用仓库根目录文件..."
+            cp ./stock_list.json ./stock_list.json
+          fi
           mkdir -p data
           python scripts/download_baostock_parallel.py
 
-      - name: 📤 Upload data partition
+      - name: 📤 Upload partition artifact
         uses: actions/upload-artifact@v4
         with:
           name: data_part_${{ matrix.task_index }}
           path: data/
 
+  # ======================== 3️⃣ 合并所有结果 ========================
   merge:
     name: 合并所有结果
     needs: download
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
       - name: 📥 Download all artifacts
@@ -55,7 +96,7 @@ jobs:
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: 📦 Install dependencies
         run: pip install pandas pyarrow tqdm
