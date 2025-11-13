@@ -1,4 +1,4 @@
-# scripts/collect_and_compress.py (带数据质检功能)
+# scripts/collect_and_compress.py
 
 import pandas as pd
 import glob
@@ -6,11 +6,12 @@ import os
 from tqdm import tqdm
 import shutil
 import json
+from pathlib import Path
 
 # --- 配置 ---
 INPUT_BASE_DIR = "all_data"
-OUTPUT_DIR = "kdata"
-FINAL_PARQUET_FILE = "full_kdata.parquet"
+OUTPUT_DIR_SMALL_FILES = "kdata" # 最终输出的所有独立小文件的目录
+FINAL_PARQUET_FILE_LARGE = "full_kdata.parquet" # 最终的合并大文件
 QC_REPORT_FILE = "data_quality_report.json" # 质检报告文件名
 
 def run_quality_check(df):
@@ -20,44 +21,54 @@ def run_quality_check(df):
     print("\n" + "="*50)
     print("🔍 开始进行数据质量检查 (Data Quality Check)...")
     
+    # 确保 'date' 列是 datetime 类型以便正确排序和查找
+    if not pd.api.types.is_datetime64_any_dtype(df['date']):
+        df['date'] = pd.to_datetime(df['date'])
+
     report = {}
     
     # 1. 基础统计
-    report['total_records'] = len(df)
-    report['total_stocks'] = df['code'].nunique()
+    report['total_records'] = int(len(df))
+    report['total_stocks'] = int(df['code'].nunique())
     report['start_date'] = df['date'].min().strftime('%Y-%m-%d')
     report['end_date'] = df['date'].max().strftime('%Y-%m-%d')
     
-    # 2. 完整性检查
-    # 检查日期是否连续 (抽样检查一只长历史股票)
-    long_history_stock = df.groupby('code').size().idxmax()
-    df_single = df[df['code'] == long_history_stock].set_index('date').sort_index()
-    missing_dates = pd.date_range(start=df_single.index.min(), end=df_single.index.max(), freq='B').difference(df_single.index)
-    report['completeness_check'] = {
-        'sample_stock': long_history_stock,
-        'business_days_missing': len(missing_dates)
-    }
+    # 2. 完整性检查 (抽样检查一只数据最长的股票)
+    try:
+        stock_lengths = df.groupby('code').size()
+        long_history_stock = stock_lengths.idxmax()
+        df_single = df[df['code'] == long_history_stock].set_index('date').sort_index()
+        # 创建一个从开始到结束的所有工作日（Business Days）的日期范围
+        # 'B' 频率排除了周末
+        expected_dates = pd.date_range(start=df_single.index.min(), end=df_single.index.max(), freq='B')
+        missing_dates = expected_dates.difference(df_single.index)
+        report['completeness_check'] = {
+            'sample_stock_for_check': long_history_stock,
+            'checked_period_years': round((df_single.index.max() - df_single.index.min()).days / 365.25, 1),
+            'business_days_missing_in_sample': int(len(missing_dates))
+        }
+    except Exception as e:
+        report['completeness_check'] = f"Error during check: {e}"
 
     # 3. 准确性检查 (异常值)
     report['accuracy_checks'] = {
-        'negative_prices': df[(df['open'] < 0) | (df['high'] < 0) | (df['low'] < 0) | (df['close'] < 0)].shape[0],
-        'zero_prices': df[df['close'] <= 0].shape[0],
-        'high_lower_than_low': df[df['high'] < df['low']].shape[0],
-        'negative_volume': df[df['volume'] < 0].shape[0]
+        'negative_prices': int(df[(df['open'] < 0) | (df['high'] < 0) | (df['low'] < 0) | (df['close'] < 0)].shape[0]),
+        'zero_prices_or_volume': int(df[(df['close'] <= 0) | (df['volume'] <= 0)].shape[0]),
+        'high_lower_than_low': int(df[df['high'] < df['low']].shape[0]),
     }
 
-    # 4. 空值检查
+    # 4. 空值 (NaNs) 检查
     nan_counts = df.isnull().sum()
-    report['nan_values'] = nan_counts[nan_counts > 0].to_dict()
+    report['nan_values_summary'] = nan_counts[nan_counts > 0].astype(int).to_dict()
 
-    # 5. 分布统计
-    stock_lengths = df.groupby('code').size()
+    # 5. 数据分布统计
     report['distribution_stats'] = {
         'avg_records_per_stock': round(stock_lengths.mean(), 2),
-        'median_records_per_stock': stock_lengths.median(),
-        'stocks_over_10_years': (stock_lengths > 250*10).sum(),
-        'stocks_over_5_years': (stock_lengths > 250*5).sum(),
-        'stocks_under_1_year': (stock_lengths < 250*1).sum()
+        'median_records_per_stock': int(stock_lengths.median()),
+        'stocks_over_15_years': int((stock_lengths > 250*15).sum()),
+        'stocks_over_10_years': int((stock_lengths > 250*10).sum()),
+        'stocks_over_5_years': int((stock_lengths > 250*5).sum()),
+        'stocks_under_1_year': int((stock_lengths < 250*1).sum())
     }
 
     print("✅ 数据质量检查完成。")
@@ -67,63 +78,88 @@ def run_quality_check(df):
         json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"📄 质检报告已保存到: {QC_REPORT_FILE}")
     
-    # 在日志中打印一份简报
+    # 在日志中打印一份简报，使用 get() 保证键不存在时不报错
     print("\n--- 数据质量简报 ---")
-    print(f"  - 总记录数: {report['total_records']:,}")
-    print(f"  - 股票总数: {report['total_stocks']}")
-    print(f"  - 数据区间: {report['start_date']} to {report['end_date']}")
-    print(f"  - 异常数据点 (价格<=0): {report['accuracy_checks']['zero_prices']}")
-    print(f"  - 异常数据点 (高<低): {report['accuracy_checks']['high_lower_than_low']}")
-    print(f"  - 数据超过10年的股票数: {report['distribution_stats']['stocks_over_10_years']}")
+    print(f"  - 股票总数: {report.get('total_stocks', 'N/A')}")
+    print(f"  - 总记录数: {report.get('total_records', 'N/A'):,}")
+    print(f"  - 数据区间: {report.get('start_date', 'N/A')} to {report.get('end_date', 'N/A')}")
+    accuracy = report.get('accuracy_checks', {})
+    print(f"  - 异常数据点 (价格<=0 或 成交量<=0): {accuracy.get('zero_prices_or_volume', 'N/A')}")
+    print(f"  - 异常数据点 (最高价 < 最低价): {accuracy.get('high_lower_than_low', 'N/A')}")
+    distribution = report.get('distribution_stats', {})
+    print(f"  - 数据超过10年的股票数: {distribution.get('stocks_over_10_years', 'N/A')}")
     print("----------------------")
     
-    # 如果发现严重问题，可以考虑让脚本失败
-    if report['accuracy_checks']['zero_prices'] > 0 or report['accuracy_checks']['high_lower_than_low'] > 0:
-        print("⚠️ 警告: 发现严重的准确性问题！")
-        # exit(1) # 可以取消注释，让工作流在发现问题时失败
+    if accuracy.get('zero_prices_or_volume', 0) > 100 or accuracy.get('high_lower_than_low', 0) > 0:
+        print("⚠️ 警告: 发现严重的准确性问题！请检查质检报告。")
 
 
 def main():
-    # ... (收集文件的部分保持不变) ...
-    # ... (合并、排序、压缩的部分也保持不变) ...
+    """
+    1. 收集所有分片文件到一个干净的目录。
+    2. 将所有数据合并、排序并保存为一个优化的 Parquet 大文件。
+    3. 对最终的合并数据进行质量检查。
+    """
     
-    # (关键) 在所有文件操作完成后，加载最终的排序后 DataFrame，进行质检
-    # 为了效率，我们直接使用内存中的 sorted_df
-    # 如果 sorted_df 存在且不为空，则执行质检
-    # sorted_df = ... 
-    
-    # 为了让逻辑清晰，我们把之前的代码整合进来
-    
-    # 阶段 1: 收集
-    if os.path.exists(OUTPUT_DIR): shutil.rmtree(OUTPUT_DIR)
-    os.makedirs(OUTPUT_DIR)
+    # --- 阶段 1: 收集所有小文件 ---
+    if os.path.exists(OUTPUT_DIR_SMALL_FILES):
+        shutil.rmtree(OUTPUT_DIR_SMALL_FILES)
+    os.makedirs(OUTPUT_DIR_SMALL_FILES)
+
     search_pattern = os.path.join(INPUT_BASE_DIR, "**", "*.parquet")
     file_list = glob.glob(search_pattern, recursive=True)
-    if not file_list: return
-    print(f"📦 共找到 {len(file_list)} 个股票文件，开始收集...")
-    for src_path in tqdm(file_list, desc="收集中"):
-        shutil.copy2(src_path, os.path.join(OUTPUT_DIR, os.path.basename(src_path)))
-    print(f"✅ 文件收集完成。")
+    
+    if not file_list:
+        print("⚠️ 未找到任何 Parquet 数据分片文件。")
+        return
 
-    # 阶段 2: 合并、排序、压缩
-    print("\n🚀 开始创建合并文件...")
-    all_parquet_files = glob.glob(os.path.join(OUTPUT_DIR, "*.parquet"))
-    if not all_parquet_files: return
-    all_dfs = [pd.read_parquet(f) for f in tqdm(all_parquet_files, desc="读取中")]
+    print(f"📦 共找到 {len(file_list)} 个股票的 Parquet 文件，开始收集...")
+    
+    for src_path in tqdm(file_list, desc="正在收集中"):
+        try:
+            filename = os.path.basename(src_path)
+            dest_path = os.path.join(OUTPUT_DIR_SMALL_FILES, filename)
+            shutil.copy2(src_path, dest_path)
+        except Exception as e:
+            print(f"\n⚠️ 复制文件 {src_path} 失败: {e}")
+            
+    print(f"\n✅ 全部 {len(file_list)} 个文件已成功收集到 '{OUTPUT_DIR_SMALL_FILES}' 目录中。")
+
+    # --- 阶段 2: 创建一个经过优化的合并大文件 ---
+    print("\n" + "="*50)
+    print("🚀 开始创建经过压缩优化的合并文件...")
+    
+    all_parquet_files = glob.glob(os.path.join(OUTPUT_DIR_SMALL_FILES, "*.parquet"))
+    
+    if not all_parquet_files:
+        print("⚠️ 在收集目录中未找到 Parquet 文件，无法创建合并文件。")
+        return
+        
+    print(f"📦 正在读取 {len(all_parquet_files)} 个 Parquet 文件...")
+    all_dfs = [pd.read_parquet(f) for f in tqdm(all_parquet_files, desc="正在读取")]
+    
+    print("... 正在合并所有数据 ...")
     merged_df = pd.concat(all_dfs, ignore_index=True)
     
-    # (确保 date 列是 datetime 类型，以便进行质检)
-    merged_df['date'] = pd.to_datetime(merged_df['date'])
-
-    print(f"... 正在按股票代码排序...")
+    print(f"... 正在按股票代码 ('code') 对 {len(merged_df)} 条记录进行排序以优化压缩...")
     sorted_df = merged_df.sort_values(by='code', ascending=True).reset_index(drop=True)
     
-    print(f"... 正在写入最终文件: {FINAL_PARQUET_FILE} ...")
-    sorted_df.to_parquet(FINAL_PARQUET_FILE, index=False, compression='zstd', row_group_size=100000)
-    print("✅ 最终合并文件创建成功！")
+    output_path = FINAL_PARQUET_FILE
+    print(f"... 正在将排序后的数据写入最终的合并文件: {output_path} ...")
+    
+    try:
+        sorted_df.to_parquet(output_path, index=False, compression='zstd', row_group_size=100000)
+        print("\n✅ 最终合并文件创建成功 (使用 zstd 压缩)！")
+    except ImportError:
+        print("\n⚠️ 警告: 未安装 'zstandard' 库，回退到 'snappy' 压缩。")
+        sorted_df.to_parquet(output_path, index=False, compression='snappy', row_group_size=100000)
+        print("\n✅ 最终合并文件创建成功 (使用 snappy 压缩)！")
 
-    # (关键) 阶段 3: 运行数据质量检查
-    run_quality_check(sorted_df)
+    # --- 阶段 3: 运行数据质量检查 ---
+    if not sorted_df.empty:
+        run_quality_check(sorted_df)
+    else:
+        print("\n⚠️ 合并后的数据为空，跳过质量检查。")
 
 
 if __name__ == "__main__":
