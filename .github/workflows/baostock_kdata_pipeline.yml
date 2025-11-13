@@ -1,4 +1,4 @@
-# .github/workflows/baostock_kdata_pipeline.yml (最终完整版)
+# .github/workflows/baostock_kdata_pipeline.yml (上传路径修正版)
 
 name: 🐂 Baostock 全A股日K线数据分布式下载 (随机负载均衡)
 
@@ -70,7 +70,7 @@ jobs:
           name: kdata_part_${{ matrix.task_index }}
           path: data_slice/
 
-  # ======================== 3️⃣ 收集与压缩 (已更新) ========================
+  # ======================== 3️⃣ 收集与压缩 (已更新上传路径) ========================
   collect:
     name: 收集、排序并压缩所有文件
     needs: download
@@ -90,23 +90,23 @@ jobs:
           python-version: "3.11"
       
       - name: 📦 Install dependencies for collection
-        # (重要) 增加 zstandard 库以支持最佳压缩
         run: pip install pandas pyarrow tqdm zstandard
 
       - name: 🗄️ Run script to collect, sort, and compress
-        # (关键修改) 调用我们新的整合脚本
         run: python scripts/collect_and_compress.py
 
+      # --- (这是唯一的、关键的修正) ---
       - name: 📤 Upload final dataset (small files)
         uses: actions/upload-artifact@v4
         with:
           name: kdata-small-files
-          # 上传包含了所有独立小文件的 kdata 文件夹
-          path: kdata/
+          # 使用绝对路径来指定要上传的文件夹
+          path: ${{ github.workspace }}/kdata/
           
       - name: 📤 Upload final merged file (large file)
         uses: actions/upload-artifact@v4
         with:
           name: full-kdata-parquet-optimized
-          # 上传经过排序优化的单一巨大文件
-          path: full_kdata.parquet
+          # 使用绝对路径来指定要上传的文件
+          path: ${{ github.workspace }}/full_kdata.parquet
+      # -----------------------------------
