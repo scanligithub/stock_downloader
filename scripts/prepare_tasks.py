@@ -1,4 +1,4 @@
-# scripts/prepare_tasks.py (Baostock 版)
+# scripts/prepare_tasks.py
 
 import baostock as bs
 import pandas as pd
@@ -25,14 +25,12 @@ def get_recent_trade_day():
 def main():
     print("🚀 开始从 Baostock 准备并行下载任务...")
     
-    # 1. 登录 Baostock
     lg = bs.login()
     if lg.error_code != '0':
         raise Exception(f"登录失败：{lg.error_msg}")
     print("✅ 登录成功")
 
     try:
-        # 2. 获取股票列表
         trade_day = get_recent_trade_day()
         rs_stock = bs.query_all_stock(day=trade_day)
         if rs_stock.error_code != '0':
@@ -42,19 +40,16 @@ def main():
         if stock_df.empty:
             raise Exception("获取到的股票列表为空。")
 
-        # 3. 筛选并构建列表
         stock_list = []
         for index, row in stock_df.iterrows():
             code, name = row['code'], row['code_name']
-            if str(code).startswith(('sh.', 'sz.')) and 'ST' not in name and '退' not in name:
+            if str(code).startswith(('sh.', 'sz.', 'bj.')) and 'ST' not in name and '退' not in name:
                 stock_list.append({'code': code, 'name': name})
         print(f"  -> 成功获取并筛选出 {len(stock_list)} 支股票。")
 
-        # 4. (核心) 随机打乱
         random.shuffle(stock_list)
         print("  -> 🃏 已将股票列表随机打乱。")
 
-        # 5. 切分任务
         chunk_size = (len(stock_list) + TASK_COUNT - 1) // TASK_COUNT
         print(f"  -> 每个任务分片包含约 {chunk_size} 支股票。")
         
