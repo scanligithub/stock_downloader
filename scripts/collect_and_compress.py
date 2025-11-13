@@ -8,11 +8,14 @@ import shutil
 import json
 from pathlib import Path
 
+# --- (这是唯一的、关键的修正) ---
 # --- 配置 ---
 INPUT_BASE_DIR = "all_data"
-OUTPUT_DIR_SMALL_FILES = "kdata" # 最终输出的所有独立小文件的目录
-FINAL_PARQUET_FILE_LARGE = "full_kdata.parquet" # 最终的合并大文件
-QC_REPORT_FILE = "data_quality_report.json" # 质检报告文件名
+OUTPUT_DIR_SMALL_FILES = "kdata"
+# 将变量名统一为 FINAL_PARQUET_FILE
+FINAL_PARQUET_FILE = "full_kdata.parquet" 
+QC_REPORT_FILE = "data_quality_report.json"
+# ------------------------------------
 
 def run_quality_check(df):
     """
@@ -21,7 +24,6 @@ def run_quality_check(df):
     print("\n" + "="*50)
     print("🔍 开始进行数据质量检查 (Data Quality Check)...")
     
-    # 确保 'date' 列是 datetime 类型以便正确排序和查找
     if not pd.api.types.is_datetime64_any_dtype(df['date']):
         df['date'] = pd.to_datetime(df['date'])
 
@@ -33,13 +35,11 @@ def run_quality_check(df):
     report['start_date'] = df['date'].min().strftime('%Y-%m-%d')
     report['end_date'] = df['date'].max().strftime('%Y-%m-%d')
     
-    # 2. 完整性检查 (抽样检查一只数据最长的股票)
+    # 2. 完整性检查
     try:
         stock_lengths = df.groupby('code').size()
         long_history_stock = stock_lengths.idxmax()
         df_single = df[df['code'] == long_history_stock].set_index('date').sort_index()
-        # 创建一个从开始到结束的所有工作日（Business Days）的日期范围
-        # 'B' 频率排除了周末
         expected_dates = pd.date_range(start=df_single.index.min(), end=df_single.index.max(), freq='B')
         missing_dates = expected_dates.difference(df_single.index)
         report['completeness_check'] = {
@@ -50,18 +50,19 @@ def run_quality_check(df):
     except Exception as e:
         report['completeness_check'] = f"Error during check: {e}"
 
-    # 3. 准确性检查 (异常值)
+    # 3. 准确性检查
     report['accuracy_checks'] = {
         'negative_prices': int(df[(df['open'] < 0) | (df['high'] < 0) | (df['low'] < 0) | (df['close'] < 0)].shape[0]),
         'zero_prices_or_volume': int(df[(df['close'] <= 0) | (df['volume'] <= 0)].shape[0]),
         'high_lower_than_low': int(df[df['high'] < df['low']].shape[0]),
     }
 
-    # 4. 空值 (NaNs) 检查
+    # 4. 空值检查
     nan_counts = df.isnull().sum()
     report['nan_values_summary'] = nan_counts[nan_counts > 0].astype(int).to_dict()
 
     # 5. 数据分布统计
+    stock_lengths = df.groupby('code').size()
     report['distribution_stats'] = {
         'avg_records_per_stock': round(stock_lengths.mean(), 2),
         'median_records_per_stock': int(stock_lengths.median()),
@@ -73,12 +74,10 @@ def run_quality_check(df):
 
     print("✅ 数据质量检查完成。")
     
-    # 将报告保存为 JSON 文件
     with open(QC_REPORT_FILE, 'w', encoding='utf-8') as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"📄 质检报告已保存到: {QC_REPORT_FILE}")
     
-    # 在日志中打印一份简报，使用 get() 保证键不存在时不报错
     print("\n--- 数据质量简报 ---")
     print(f"  - 股票总数: {report.get('total_stocks', 'N/A')}")
     print(f"  - 总记录数: {report.get('total_records', 'N/A'):,}")
@@ -153,14 +152,13 @@ def main():
     except ImportError:
         print("\n⚠️ 警告: 未安装 'zstandard' 库，回退到 'snappy' 压缩。")
         sorted_df.to_parquet(output_path, index=False, compression='snappy', row_group_size=100000)
-        print("\n✅ 最终合并文件创建成功 (使用 snappy 压缩)！")
+        print("\n✅ 最終合併文件創建成功 (使用 snappy 壓縮)！")
 
     # --- 阶段 3: 运行数据质量检查 ---
     if not sorted_df.empty:
         run_quality_check(sorted_df)
     else:
         print("\n⚠️ 合并后的数据为空，跳过质量检查。")
-
 
 if __name__ == "__main__":
     main()
