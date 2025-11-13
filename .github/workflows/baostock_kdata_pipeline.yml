@@ -1,0 +1,97 @@
+# .github/workflows/baostock_kdata_pipeline.yml
+
+name: 🐂 Baostock 全A股日K线数据分布式下载
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # ======================== 1️⃣ 准备任务 (动态获取 & 随机分片) ========================
+  prepare:
+    name: 获取列表并随机化任务
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          
+      - name: 📦 Install Baostock dependencies
+        run: pip install baostock pandas
+
+      - name: 🃏 运行脚本对任务进行随机切分
+        run: python scripts/prepare_tasks.py
+
+      - name: 📤 Upload task slices artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-slices
+          path: task_slices/
+
+  # ======================== 2️⃣ 并行下载数据 ========================
+  download:
+    name: 下载分区 (Index ${{ matrix.task_index }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        task_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+      max-parallel: 20
+      fail-fast: false
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📥 Download randomized task slices
+        uses: actions/download-artifact@v4
+        with:
+          name: task-slices
+          path: tasks/
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install dependencies
+        run: pip install baostock pandas pyarrow tqdm
+
+      - name: 📈 Run Baostock parallel downloader
+        env:
+          TASK_INDEX: ${{ matrix.task_index }}
+        run: python scripts/download_baostock_parallel.py
+
+      - name: 📤 Upload partition artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdata_part_${{ matrix.task_index }}
+          path: data_slice/
+
+  # ======================== 3️⃣ 收集所有文件 ========================
+  collect:
+    name: 收集所有 Parquet 文件
+    needs: download
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Download all data artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_data 
+
+      - name: 🗄️ Collect all files into one directory
+        run: |
+          mkdir -p kdata
+          # 深度搜索 all_data 目录下的所有 .parquet 文件，并移动到 kdata 目录
+          find all_data -type f -name "*.parquet" -exec mv {} kdata/ \;
+          echo "所有 Parquet 文件已汇集到 kdata 目录。"
+          ls -l kdata | head -n 10 # 显示前10个文件作为验证
+
+      - name: 📤 Upload final dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-kdata-parquet
+          path: kdata/ # 上传最终的 kdata 文件夹
