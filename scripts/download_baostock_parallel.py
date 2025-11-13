@@ -1,4 +1,4 @@
-# scripts/download_baostock_parallel.py (K-Data Only 版)
+# scripts/download_baostock_parallel.py
 
 import os
 import json
@@ -8,7 +8,6 @@ from tqdm import tqdm
 
 # --- 配置 ---
 OUTPUT_DIR = "data_slice"
-# (关键) 使用被验证过的、能成功获取数据的“安全”起始日期
 START_DATE = "2005-01-01"
 
 # --- 获取环境变量 & 准备目录 ---
@@ -53,7 +52,6 @@ def main():
         print(f"❌ 致命错误: 未找到任务分片文件 {task_file}！")
         exit(1)
 
-    # (关键) 在每个并行作业中独立登录
     lg = bs.login()
     if lg.error_code != '0':
         print(f"❌ 分区 {TASK_INDEX + 1} 登录失败: {lg.error_msg}")
