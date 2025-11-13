@@ -1,4 +1,4 @@
-# scripts/collect_and_compress.py (类型转换修正版)
+# scripts/collect_and_compress.py (缩进修正版)
 
 import pandas as pd
 import glob
@@ -11,7 +11,7 @@ from pathlib import Path
 # --- 配置 ---
 INPUT_BASE_DIR = "all_data"
 OUTPUT_DIR_SMALL_FILES = "kdata"
-FINAL_PARQUET_FILE = "full_kdata.parquet"
+FINAL_PARQUET_FILE = "full_kdata.parquet" 
 QC_REPORT_FILE = "data_quality_report.json"
 
 # ... run_quality_check 函数保持不变 ...
@@ -35,27 +35,15 @@ def main():
     print("... 正在合并所有数据 ...")
     merged_df = pd.concat(all_dfs, ignore_index=True)
 
-    # --- (这是唯一的、关键的修正) ---
     print("... 正在进行强制数据类型转换 ...")
-    # 定义需要转换为数值的列
-    numeric_cols = [
-        'open', 'high', 'low', 'close', 'preclose', 
-        'volume', 'amount', 'turn', 'pctChg'
-    ]
-    # 'isST' 列可能包含 0/1 或空字符串，也一并处理
+    numeric_cols = ['open', 'high', 'low', 'close', 'preclose', 'volume', 'amount', 'turn', 'pctChg']
     cols_to_convert = numeric_cols + ['isST']
-
     for col in cols_to_convert:
         if col in merged_df.columns:
-            # 使用 pd.to_numeric，并将无法转换的值设为 NaN (空值)
             merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
-
-    # 将 'date' 列转换为 datetime 对象
     if 'date' in merged_df.columns:
         merged_df['date'] = pd.to_datetime(merged_df['date'], errors='coerce')
-    
     print("✅ 数据类型转换完成。")
-    # ------------------------------------
     
     print(f"... 正在按股票代码 ('code') 对 {len(merged_df)} 条记录进行排序以优化压缩...")
     sorted_df = merged_df.sort_values(by='code', ascending=True).reset_index(drop=True)
@@ -63,13 +51,16 @@ def main():
     output_path = FINAL_PARQUET_FILE
     print(f"... 正在将排序后的数据写入最终的合并文件: {output_path} ...")
     
-    # ... to_parquet 和 run_quality_check 的调用保持不变 ...
+    # (这是修正后的 try...except 块)
     try:
         sorted_df.to_parquet(output_path, index=False, compression='zstd', row_group_size=100000)
         print("\n✅ 最终合并文件创建成功 (使用 zstd 压缩)！")
     except ImportError:
-        # ...
-    
+        print("\n⚠️ 警告: 未安装 'zstandard' 库，回退到 'snappy' 压缩。")
+        sorted_df.to_parquet(output_path, index=False, compression='snappy', row_group_size=100000)
+        print("\n✅ 最终合并文件创建成功 (使用 snappy 压缩)！")
+
+    # --- 阶段 3: 运行数据质量检查 ---
     if not sorted_df.empty:
         run_quality_check(sorted_df)
     else:
@@ -77,3 +68,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# (注意: run_quality_check 函数需要您从之前的回复中完整复制过来，这里省略以保持简洁)
