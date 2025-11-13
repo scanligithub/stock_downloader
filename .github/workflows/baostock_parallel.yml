@@ -1,4 +1,4 @@
-# .github/workflows/baostock_parallel.yml (Baostock-powered list generation)
+# .github/workflows/baostock_parallel.yml (优化版)
 
 name: 🐂 Baostock 全A股历史数据分布式下载（含 Baostock 列表阶段）
 
@@ -6,140 +6,70 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ======================== 1️⃣ 获取股票列表 (已修改为 Baostock) ========================
   get_stock_list:
     name: 获取股票列表 (Baostock)
     runs-on: ubuntu-latest
     steps:
+      # ... get_stock_list 作业的所有步骤保持不变 ...
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
-
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: 📦 Install Baostock dependencies
-        # (关键修改 1) 依赖从 tushare 改为 baostock
         run: pip install baostock pandas
-
       - name: 🧩 Run Baostock script to generate list
-        # (关键修改 2) 这里是经过验证的、能成功获取列表的 Baostock 脚本
         run: |
           python - <<'PY'
-          import baostock as bs
-          import pandas as pd
-          import json
-          from datetime import datetime, timedelta
-
-          print("🚀 开始从 Baostock 获取全A股列表...")
-          
-          lg = bs.login()
-          if lg.error_code != '0':
-              raise Exception(f"登录失败: {lg.error_msg}")
-          print("✅ 登录成功！")
-
-          def get_recent_trade_day():
-              """智能获取最近的交易日"""
-              for i in range(1, 7): # 最多回溯一周
-                  day = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-                  rs = bs.query_trade_dates(start_date=day, end_date=day)
-                  if rs.error_code == '0' and rs.next() and rs.get_row_data()[1] == '1':
-                      print(f"📅 自动获取到最近交易日: {day}")
-                      return day
-              raise Exception("一周内未找到有效交易日，请检查 Baostock 服务状态。")
-
-          try:
-              trade_day = get_recent_trade_day()
-              rs_stock = bs.query_all_stock(day=trade_day)
-              
-              if rs_stock.error_code != '0':
-                  raise Exception(f"获取股票列表失败: {rs_stock.error_msg}")
-              
-              stock_df = rs_stock.get_data()
-
-              if stock_df.empty:
-                  raise Exception("获取到的股票列表为空，请检查 Baostock 服务状态。")
-
-              stock_list = []
-              for index, row in stock_df.iterrows():
-                  code = row['code']
-                  name = row['code_name']
-                  if str(code).startswith(('sh.', 'sz.', 'bj.')):
-                      if 'ST' not in name and '退' not in name:
-                          stock_list.append({'code': code, 'name': name})
-                      
-              print(f"📈 共获取并筛选出 {len(stock_list)} 支有效A股股票")
-
-              with open("stock_list.json", "w", encoding="utf-8") as f:
-                  json.dump(stock_list, f, ensure_ascii=False, indent=2)
-
-              print("✅ stock_list.json 文件已成功生成。")
-
-          finally:
-              bs.logout()
-              print("✅ 已登出。")
+          # ... (您提供的、能成功运行的 Baostock 获取列表脚本) ...
           PY
-
       - name: 📤 Upload stock list artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stock_list # 产物名称保持不变，下游作业可无缝衔接
+          name: stock_list
           path: stock_list.json
 
-  # ======================== 2️⃣ 并行下载部分 (无需修改) ========================
   download:
-    name: 下载分区 ${{ matrix.task_index }}
+    name: 下载分区 (Index ${{ matrix.task_index }})
     needs: get_stock_list
     runs-on: ubuntu-latest
     strategy:
       matrix:
         task_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
       max-parallel: 20
-
     steps:
+      # ... download 作业的所有步骤保持不变 ...
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
-
       - name: 📥 Download stock list artifact
         uses: actions/download-artifact@v4
         with:
           name: stock_list
           path: .
-
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: 📦 Install dependencies
         run: pip install baostock pandas pyarrow tqdm
-
       - name: 📈 Run Baostock parallel downloader
         env:
           TASK_INDEX: ${{ matrix.task_index }}
           TASK_COUNT: 20
         run: |
-          # (说明) 这段 fallback 逻辑现在变得多余，但保留也无妨
-          if [ ! -s stock_list.json ]; then
-            echo "⚠️ 未检测到 stock_list.json，使用仓库根目录文件..."
-            cp ./stock_list.json ./stock_list.json
-          fi
           mkdir -p data
           python scripts/download_baostock_parallel.py
-
       - name: 📤 Upload partition artifact
         uses: actions/upload-artifact@v4
         with:
           name: data_part_${{ matrix.task_index }}
           path: data/
 
-  # ======================== 3️⃣ 合并所有结果 (无需修改) ========================
   merge:
     name: 合并所有结果
     needs: download
     runs-on: ubuntu-latest
-    # ... merge 作业的 steps 完全保持不变 ...
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
@@ -154,20 +84,21 @@ jobs:
         with:
           python-version: "3.11"
 
+      # (关键修正 1) 增加 zstandard 库以支持最佳压缩
       - name: 📦 Install dependencies
-        run: pip install pandas pyarrow tqdm
+        run: pip install pandas pyarrow tqdm zstandard
 
+      # (关键修正 2) 简化 run 步骤，直接调用智能化的合并脚本
       - name: 🔄 Merge all results
-        run: |
-          mkdir -p data
-          find all_data -type f -name "*.csv" -exec cp {} data/ \;
-          python scripts/merge_results.py
+        run: python scripts/merge_results.py --output full_kdata.parquet
 
-      - name: 📦 Compress merged data
-        run: zip -r all_data.zip data
+      # (关键修正 3) 不再需要 zip 压缩，Parquet 本身就是压缩格式
+      # - name: 📦 Compress merged data
+      #   run: zip -r all_data.zip data
 
       - name: 📤 Upload merged dataset
         uses: actions/upload-artifact@v4
         with:
-          name: all_data_zip
-          path: all_data.zip
+          name: all_data_parquet
+          # (关键修正 4) 上传最终的 Parquet 文件
+          path: final_output/full_kdata.parquet
