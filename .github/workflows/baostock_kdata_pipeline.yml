@@ -1,4 +1,4 @@
-# .github/workflows/baostock_kdata_pipeline.yml (路径修正与调试版)
+# .github/workflows/baostock_kdata_pipeline.yml (最终完整版)
 
 name: 🐂 Baostock 全A股日K线数据分布式下载 (随机负载均衡)
 
@@ -70,9 +70,9 @@ jobs:
           name: kdata_part_${{ matrix.task_index }}
           path: data_slice/
 
-  # ======================== 3️⃣ 收集与压缩 (已更新上传路径) ========================
+  # ======================== 3️⃣ 收集、压缩并质检 ========================
   collect:
-    name: 收集、排序并压缩所有文件
+    name: 收集、排序、压缩并质检所有文件
     needs: download
     runs-on: ubuntu-latest
     steps:
@@ -92,18 +92,9 @@ jobs:
       - name: 📦 Install dependencies for collection
         run: pip install pandas pyarrow tqdm zstandard
 
-      - name: 🗄️ Run script to collect, sort, and compress
+      - name: 🗄️ Run script to collect, sort, compress, and quality check
         run: python scripts/collect_and_compress.py
 
-      # (新增) 调试步骤，检查文件是否已在预期位置生成
-      - name: 🕵️ List final files before uploading
-        run: |
-          echo "--- Listing files in current directory (${{ github.workspace }}) ---"
-          ls -l
-          echo "--- Listing files in kdata/ directory ---"
-          ls -l kdata/
-
-      # --- (关键修正: 回归到简单的相对路径) ---
       - name: 📤 Upload final dataset (small files)
         uses: actions/upload-artifact@v4
         with:
@@ -115,4 +106,12 @@ jobs:
         with:
           name: full-kdata-parquet-optimized
           path: full_kdata.parquet
-      # -----------------------------------
+
+      # --- (这是唯一的、关键的修正) ---
+      - name: 📤 Upload Data Quality Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-quality-report
+          # 上传由脚本生成的质检报告 JSON 文件
+          path: data_quality_report.json
+      # ------------------------------------
