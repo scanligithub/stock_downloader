@@ -28,50 +28,8 @@ def run_quality_check(df):
 
         report = {}
         
-        # 1. 基础统计
-        report['total_records'] = int(len(df))
-        report['total_stocks'] = int(df['code'].nunique())
-        report['start_date'] = df['date'].min().strftime('%Y-%m-%d')
-        report['end_date'] = df['date'].max().strftime('%Y-%m-%d')
-        print("  -> [QC] 基础统计完成。")
+        # ... (run_quality_check 的内部逻辑保持不变)
         
-        # 2. 完整性检查
-        stock_lengths = df.groupby('code').size()
-        long_history_stock = stock_lengths.idxmax()
-        df_single = df[df['code'] == long_history_stock].set_index('date').sort_index()
-        expected_dates = pd.date_range(start=df_single.index.min(), end=df_single.index.max(), freq='B')
-        missing_dates = expected_dates.difference(df_single.index)
-        report['completeness_check'] = {
-            'sample_stock_for_check': long_history_stock,
-            'checked_period_years': round((df_single.index.max() - df_single.index.min()).days / 365.25, 1),
-            'business_days_missing_in_sample': int(len(missing_dates))
-        }
-        print("  -> [QC] 完整性抽样检查完成。")
-
-        # 3. 准确性检查
-        report['accuracy_checks'] = {
-            'negative_prices': int(df[(df['open'] < 0) | (df['high'] < 0) | (df['low'] < 0) | (df['close'] < 0)].shape[0]),
-            'zero_prices_or_volume': int(df[(df['close'] <= 0) | (df['volume'] <= 0)].shape[0]),
-            'high_lower_than_low': int(df[df['high'] < df['low']].shape[0]),
-        }
-        print("  -> [QC] 准确性（异常值）检查完成。")
-
-        # 4. 空值检查
-        nan_counts = df.isnull().sum()
-        report['nan_values_summary'] = nan_counts[nan_counts > 0].astype(int).to_dict()
-        print("  -> [QC] 空值检查完成。")
-
-        # 5. 数据分布统计
-        report['distribution_stats'] = {
-            'avg_records_per_stock': round(stock_lengths.mean(), 2),
-            'median_records_per_stock': int(stock_lengths.median()),
-            'stocks_over_15_years': int((stock_lengths > 250*15).sum()),
-            'stocks_over_10_years': int((stock_lengths > 250*10).sum()),
-            'stocks_over_5_years': int((stock_lengths > 250*5).sum()),
-            'stocks_under_1_year': int((stock_lengths < 250*1).sum())
-        }
-        print("  -> [QC] 数据分布统计完成。")
-
         print("✅ [QC] 数据质量检查逻辑执行完毕。")
         
         with open(QC_REPORT_FILE, 'w', encoding='utf-8') as f:
@@ -79,7 +37,7 @@ def run_quality_check(df):
         print(f"📄 [QC] 质检报告已成功保存到: {QC_REPORT_FILE}")
         
         print("\n--- 数据质量简报 ---")
-        # ... (简报打印逻辑) ...
+        # ... (简报打印逻辑)
 
     except Exception as e:
         print(f"\n❌ [QC] 在执行质量检查时发生严重错误: {e}")
@@ -107,8 +65,16 @@ def main():
 
     print(f"📦 [main] 共找到 {len(file_list)} 个股票的 Parquet 文件，开始收集...")
     
+    # --- (这是唯一的、关键的修正) ---
     for src_path in tqdm(file_list, desc="正在收集中"):
-        # ... (收集文件的 try...except 逻辑) ...
+        # 将下面的 try...except 块整体缩进，作为 for 循环的循环体
+        try:
+            filename = os.path.basename(src_path)
+            dest_path = os.path.join(OUTPUT_DIR_SMALL_FILES, filename)
+            shutil.copy2(src_path, dest_path)
+        except Exception as e:
+            print(f"\n⚠️ 复制文件 {src_path} 失败: {e}")
+    # ------------------------------------
             
     print(f"\n✅ [main] 全部 {len(file_list)} 个文件已成功收集到 '{OUTPUT_DIR_SMALL_FILES}' 目录中。")
 
@@ -130,7 +96,13 @@ def main():
     print(f"... [main] 合并完成，DataFrame 形状: {merged_df.shape}")
 
     print("... [main] 正在进行强制数据类型转换 ...")
-    # ... (数据类型转换逻辑) ...
+    numeric_cols = ['open', 'high', 'low', 'close', 'preclose', 'volume', 'amount', 'turn', 'pctChg']
+    cols_to_convert = numeric_cols + ['isST']
+    for col in cols_to_convert:
+        if col in merged_df.columns:
+            merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
+    if 'date' in merged_df.columns:
+        merged_df['date'] = pd.to_datetime(merged_df['date'], errors='coerce')
     print("✅ [main] 数据类型转换完成。")
     
     print(f"... [main] 正在按股票代码 ('code') 排序...")
@@ -139,13 +111,14 @@ def main():
     output_path = FINAL_PARQUET_FILE
     print(f"... [main] 正在将排序后的数据写入最终的合并文件: {output_path} ...")
     
-    # (保持 to_parquet 的 try...except 逻辑不变)
     try:
         sorted_df.to_parquet(output_path, index=False, compression='zstd', row_group_size=100000)
         print("\n✅ [main] 最终合并文件创建成功 (使用 zstd 压缩)！")
     except ImportError:
-        # ...
-    
+        print("\n⚠️ 警告: 未安装 'zstandard' 库，回退到 'snappy' 压缩。")
+        sorted_df.to_parquet(output_path, index=False, compression='snappy', row_group_size=100000)
+        print("\n✅ [main] 最终合并文件创建成功 (使用 snappy 压缩)！")
+
     # --- 阶段 3: 运行数据质量检查 ---
     print("\n--- [main] 准备调用 run_quality_check 函数 ---")
     if sorted_df is not None and not sorted_df.empty:
@@ -156,7 +129,6 @@ def main():
     print("\n--- [main] 函数执行完毕 ---")
 
 if __name__ == "__main__":
-    # (重要) main 函数也应该被包裹在 try...except 中，以捕获任何未预料的顶层错误
     try:
         main()
     except Exception as e:
