@@ -6,7 +6,101 @@ import os
 from tqdm import tqdm
 import shutil
 import json
-from pathlib import Path
+from pathlib import Path# .github/workflows/baostock_kdata_pipeline.yml (最终正确版)
+
+name: 🐂 Baostock 全A股日K线数据分布式下载 (随机负载均衡)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    name: 获取列表并随机化任务
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 📦 Install Baostock dependencies
+        run: pip install baostock pandas
+      - name: 🃏 运行脚本对任务进行随机切分
+        run: python scripts/prepare_tasks.py
+      - name: 📤 Upload task slices artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-slices
+          path: task_slices/
+
+  download:
+    name: 下载分区 (Index ${{ matrix.task_index }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        task_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+      max-parallel: 20
+      fail-fast: false
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+      - name: 📥 Download randomized task slices
+        uses: actions-hub/download-artifact@v3
+        with:
+          name: task-slices
+          path: tasks/
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 📦 Install dependencies
+        run: pip install baostock pandas pyarrow tqdm
+      - name: 📈 Run Baostock parallel downloader
+        env:
+          TASK_INDEX: ${{ matrix.task_index }}
+        run: python scripts/download_baostock_parallel.py
+      - name: 📤 Upload partition artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdata_part_${{ matrix.task_index }}
+          path: data_slice/
+
+  collect:
+    name: 收集、排序、压缩并质检所有文件
+    needs: download
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repository (for collect script)
+        uses: actions/checkout@v4
+      - name: 📥 Download all data artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_data 
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 📦 Install dependencies for collection
+        run: pip install pandas pyarrow tqdm zstandard
+      - name: 🗄️ Run script to collect, sort, compress, and quality check
+        run: python scripts/collect_and_compress.py
+      - name: 📤 Upload final dataset (small files)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdata-small-files
+          path: kdata/
+      - name: 📤 Upload final merged file (large file)
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-kdata-parquet-optimized
+          path: full_kdata.parquet
+      - name: 📤 Upload Data Quality Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-quality-report
+          path: data_quality_report.json
 
 # --- 配置 ---
 INPUT_BASE_DIR = "all_data"
