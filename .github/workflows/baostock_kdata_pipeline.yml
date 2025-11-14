@@ -1,4 +1,4 @@
-# .github/workflows/baostock_kdata_pipeline.yml (上传路径修正版)
+# .github/workflows/baostock_kdata_pipeline.yml (路径修正与调试版)
 
 name: 🐂 Baostock 全A股日K线数据分布式下载 (随机负载均衡)
 
@@ -95,18 +95,24 @@ jobs:
       - name: 🗄️ Run script to collect, sort, and compress
         run: python scripts/collect_and_compress.py
 
-      # --- (这是唯一的、关键的修正) ---
+      # (新增) 调试步骤，检查文件是否已在预期位置生成
+      - name: 🕵️ List final files before uploading
+        run: |
+          echo "--- Listing files in current directory (${{ github.workspace }}) ---"
+          ls -l
+          echo "--- Listing files in kdata/ directory ---"
+          ls -l kdata/
+
+      # --- (关键修正: 回归到简单的相对路径) ---
       - name: 📤 Upload final dataset (small files)
         uses: actions/upload-artifact@v4
         with:
           name: kdata-small-files
-          # 使用绝对路径来指定要上传的文件夹
-          path: ${{ github.workspace }}/kdata/
+          path: kdata/
           
       - name: 📤 Upload final merged file (large file)
         uses: actions/upload-artifact@v4
         with:
           name: full-kdata-parquet-optimized
-          # 使用绝对路径来指定要上传的文件
-          path: ${{ github.workspace }}/full_kdata.parquet
+          path: full_kdata.parquet
       # -----------------------------------
