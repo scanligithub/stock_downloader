@@ -73,7 +73,7 @@ def run_quality_check(df):
     print("\n--- 数据质量简报 ---")
     print(f"  - 股票总数: {report.get('total_stocks', 'N/A')}")
     print(f"  - 总记录数: {report.get('total_records', 'N/A'):,}")
-    # ... (其他简报打印)
+    # ... (其他简报打印) ...
 
 def main():
     """
@@ -93,23 +93,18 @@ def main():
     if not file_list:
         print("\n" + "="*60)
         print("❌ 致命错误: 在所有下载产物中，未找到任何 .parquet 文件！")
-        print("   这通常意味着上游的 'download' 作业虽然显示成功，但实际上没有下载到任何数据。")
-        print("   请检查 'download' 作业的详细日志，确认是否有 '致命警告'。")
-        print("="*60)
+        # ... (错误提示)
         exit(1)
 
     print(f"📦 共找到 {len(file_list)} 个股票的 Parquet 文件，开始收集...")
     
-    # --- (这是唯一的、关键的修正) ---
     for src_path in tqdm(file_list, desc="正在收集中"):
-        # 将下面的 try...except 块整体缩进
         try:
             filename = os.path.basename(src_path)
             dest_path = os.path.join(OUTPUT_DIR_SMALL_FILES, filename)
             shutil.copy2(src_path, dest_path)
         except Exception as e:
             print(f"\n⚠️ 复制文件 {src_path} 失败: {e}")
-    # ------------------------------------
             
     print(f"\n✅ 全部 {len(file_list)} 个文件已成功收集到 '{OUTPUT_DIR_SMALL_FILES}' 目录中。")
 
@@ -135,8 +130,12 @@ def main():
     for col in cols_to_convert:
         if col in merged_df.columns:
             merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce')
+
+    # --- (这是唯一的、关键的修正) ---
     if 'date' in merged_df.columns:
-        merged_df['date'] = pd.to_datetime(merged_df[date], errors='coerce')
+        # 将 date (变量) 修改为 'date' (字符串)
+        merged_df['date'] = pd.to_datetime(merged_df['date'], errors='coerce')
+    # ------------------------------------
     print("✅ 数据类型转换完成。")
     
     print(f"... 正在按股票代码 ('code') 对 {len(merged_df)} 条记录进行排序以优化压缩...")
