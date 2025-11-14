@@ -1,117 +1,114 @@
-# .github/workflows/baostock_kdata_pipeline.yml (最终完整版)
+# scripts/collect_and_compress.py
 
-name: 🐂 Baostock 全A股日K线数据分布式下载 (随机负载均衡)
+import pandas as pd
+import glob
+import os
+from tqdm import tqdm
+import shutil
+import json
+from pathlib import Path
 
-on:
-  workflow_dispatch:
+# --- 配置 ---
+INPUT_BASE_DIR = "all_data"
+OUTPUT_DIR_SMALL_FILES = "kdata"
+FINAL_PARQUET_FILE = "full_kdata.parquet" 
+QC_REPORT_FILE = "data_quality_report.json"
 
-jobs:
-  # ======================== 1️⃣ 准备任务 (动态获取 & 随机分片) ========================
-  prepare:
-    name: 获取列表并随机化任务
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Checkout repository
-        uses: actions/checkout@v4
+def run_quality_check(df):
+    """
+    对合并后的 DataFrame 进行数据质量检查，并生成报告。
+    """
+    print("\n" + "="*50)
+    print("🔍 [QC] 开始进行数据质量检查 (Data Quality Check)...")
+    
+    try:
+        if not pd.api.types.is_datetime64_any_dtype(df['date']):
+            df['date'] = pd.to_datetime(df['date'])
+        print("  -> [QC] 日期列类型检查/转换完成。")
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          
-      - name: 📦 Install Baostock dependencies
-        run: pip install baostock pandas
-
-      - name: 🃏 运行脚本对任务进行随机切分
-        run: python scripts/prepare_tasks.py
-
-      - name: 📤 Upload task slices artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: task-slices
-          path: task_slices/
-
-  # ======================== 2️⃣ 并行下载数据 ========================
-  download:
-    name: 下载分区 (Index ${{ matrix.task_index }})
-    needs: prepare
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        task_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-      max-parallel: 20
-      fail-fast: false
-    steps:
-      - name: 📥 Checkout repository
-        uses: actions/checkout@v4
+        # --- (这是关键) ---
+        # 确保 report 字典被完整地填充
+        report = {}
         
-      - name: 📥 Download randomized task slices
-        uses: actions/download-artifact@v4
-        with:
-          name: task-slices
-          path: tasks/
-          
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: 📦 Install dependencies
-        run: pip install baostock pandas pyarrow tqdm
-
-      - name: 📈 Run Baostock parallel downloader
-        env:
-          TASK_INDEX: ${{ matrix.task_index }}
-        run: python scripts/download_baostock_parallel.py
+        # 1. 基础统计
+        report['total_records'] = int(len(df))
+        report['total_stocks'] = int(df['code'].nunique())
+        report['start_date'] = df['date'].min().strftime('%Y-%m-%d')
+        report['end_date'] = df['date'].max().strftime('%Y-%m-%d')
+        print("  -> [QC] 基础统计完成。")
         
-      - name: 📤 Upload partition artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kdata_part_${{ matrix.task_index }}
-          path: data_slice/
+        # 2. 完整性检查
+        stock_lengths = df.groupby('code').size()
+        long_history_stock = stock_lengths.idxmax()
+        df_single = df[df['code'] == long_history_stock].set_index('date').sort_index()
+        expected_dates = pd.date_range(start=df_single.index.min(), end=df_single.index.max(), freq='B')
+        missing_dates = expected_dates.difference(df_single.index)
+        report['completeness_check'] = {
+            'sample_stock_for_check': long_history_stock,
+            'checked_period_years': round((df_single.index.max() - df_single.index.min()).days / 365.25, 1),
+            'business_days_missing_in_sample': int(len(missing_dates))
+        }
+        print("  -> [QC] 完整性抽样检查完成。")
 
-  # ======================== 3️⃣ 收集、压缩并质检 ========================
-  collect:
-    name: 收集、排序、压缩并质检所有文件
-    needs: download
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Checkout Repository (for collect script)
-        uses: actions/checkout@v4
+        # 3. 准确性检查
+        report['accuracy_checks'] = {
+            'negative_prices': int(df[(df['open'] < 0) | (df['high'] < 0) | (df['low'] < 0) | (df['close'] < 0)].shape[0]),
+            'zero_prices_or_volume': int(df[(df['close'] <= 0) | (df['volume'] <= 0)].shape[0]),
+            'high_lower_than_low': int(df[df['high'] < df['low']].shape[0]),
+        }
+        print("  -> [QC] 准确性（异常值）检查完成。")
 
-      - name: 📥 Download all data artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all_data 
+        # 4. 空值检查
+        nan_counts = df.isnull().sum()
+        report['nan_values_summary'] = nan_counts[nan_counts > 0].astype(int).to_dict()
+        print("  -> [QC] 空值检查完成。")
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      
-      - name: 📦 Install dependencies for collection
-        run: pip install pandas pyarrow tqdm zstandard
+        # 5. 数据分布统计
+        report['distribution_stats'] = {
+            'avg_records_per_stock': round(stock_lengths.mean(), 2),
+            'median_records_per_stock': int(stock_lengths.median()),
+            'stocks_over_15_years': int((stock_lengths > 250*15).sum()),
+            'stocks_over_10_years': int((stock_lengths > 250*10).sum()),
+            'stocks_over_5_years': int((stock_lengths > 250*5).sum()),
+            'stocks_under_1_year': int((stock_lengths < 250*1).sum())
+        }
+        print("  -> [QC] 数据分布统计完成。")
+        # -------------------
 
-      - name: 🗄️ Run script to collect, sort, compress, and quality check
-        run: python scripts/collect_and_compress.py
+        print("✅ [QC] 数据质量检查逻辑执行完毕。")
+        
+        with open(QC_REPORT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        print(f"📄 [QC] 质检报告已成功保存到: {QC_REPORT_FILE}")
+        
+        # 打印简报
+        print("\n--- 数据质量简报 ---")
+        print(f"  - 股票总数: {report.get('total_stocks', 'N/A')}")
+        print(f"  - 总记录数: {report.get('total_records', 'N/A'):,}")
+        print(f"  - 数据区间: {report.get('start_date', 'N/A')} to {report.get('end_date', 'N/A')}")
+        accuracy = report.get('accuracy_checks', {})
+        print(f"  - 异常数据点 (价格/成交量<=0): {accuracy.get('zero_prices_or_volume', 'N/A')}")
+        distribution = report.get('distribution_stats', {})
+        print(f"  - 数据超过10年的股票数: {distribution.get('stocks_over_10_years', 'N/A')}")
+        print("----------------------")
 
-      - name: 📤 Upload final dataset (small files)
-        uses: actions/upload-artifact@v4
-        with:
-          name: kdata-small-files
-          path: kdata/
-          
-      - name: 📤 Upload final merged file (large file)
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-kdata-parquet-optimized
-          path: full_kdata.parquet
+    except Exception as e:
+        print(f"\n❌ [QC] 在执行质量检查时发生严重错误: {e}")
+        import traceback
+        traceback.print_exc()
 
-      # --- (这是唯一的、关键的修正) ---
-      - name: 📤 Upload Data Quality Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: data-quality-report
-          # 上传由脚本生成的质检报告 JSON 文件
-          path: data_quality_report.json
-      # ------------------------------------
+
+def main():
+    # ... main 函数的其余部分与您之前成功运行的版本完全相同 ...
+    # ... 请确保这部分代码是完整的 ...
+    pass # 替换为完整的 main 函数逻辑
+
+if __name__ == "__main__":
+    # (重要) main 函数的调用保持不变
+    try:
+        main()
+    except Exception as e:
+        print(f"\n❌❌❌ 在 main 函数顶层捕获到致命异常: {e} ❌❌❌")
+        import traceback
+        traceback.print_exc()
+        exit(1)
