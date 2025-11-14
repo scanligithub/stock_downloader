@@ -15,9 +15,6 @@ FINAL_PARQUET_FILE = "full_kdata.parquet"
 QC_REPORT_FILE = "data_quality_report.json"
 
 def run_quality_check(df):
-    """
-    对合并后的 DataFrame 进行数据质量检查，并生成报告。
-    """
     print("\n" + "="*50)
     print("🔍 [QC] 开始进行数据质量检查 (Data Quality Check)...")
     
